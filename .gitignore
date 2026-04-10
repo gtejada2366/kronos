@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Config with secrets
+config/settings.toml
+
+# Data (keep structure, not data)
+data/raw/
+data/cache/
+
+# Vendor (cloned repos)
+vendor/
+
+# Model weights (auto-downloaded from HuggingFace)
+*.pt
+*.safetensors
+*.bin
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Env
+.env

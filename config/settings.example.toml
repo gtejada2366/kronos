@@ -1,0 +1,67 @@
+# Kronos Trading System — Configuration
+# Copy to settings.toml and fill in your values
+
+[kronos]
+# Model to use from HuggingFace (auto-downloaded)
+# Options: "NeoQuasar/Kronos-mini" (4.1M), "NeoQuasar/Kronos-small" (24.7M), "NeoQuasar/Kronos-base" (102.3M)
+model_name = "NeoQuasar/Kronos-small"
+tokenizer_name = "NeoQuasar/Kronos-Tokenizer-base"
+# Max context length (512 for small/base, 2048 for mini)
+max_context = 512
+# Device: "cuda", "mps" (Mac), or "cpu"
+device = "cpu"
+
+[binance]
+# Public API — no key needed for historical data
+base_url = "https://api.binance.com"
+# For live trading only:
+api_key = ""
+api_secret = ""
+
+[trading]
+# Pairs to track (top by volume, USDT pairs)
+pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
+# K-line interval
+interval = "15m"
+# How many candles as lookback for prediction
+lookback = 400
+# How many candles to predict ahead
+pred_len = 12
+# Number of trajectory samples (more = better signal, slower)
+sample_count = 10
+# Sampling temperature (lower = more deterministic)
+temperature = 0.6
+# Nucleus sampling
+top_p = 0.9
+
+[signals]
+# Minimum predicted return to trigger BUY signal
+buy_threshold = 0.005
+# Minimum predicted return to trigger SELL signal (negative)
+sell_threshold = -0.005
+# Minimum agreement across trajectories
+min_agreement = 0.60
+
+[backtest]
+# Historical data period
+days = 365
+# Walk-forward step size (candles between predictions)
+step_size = 12
+# Holding period (candles)
+hold_period = 12
+# Initial capital (USDC)
+initial_capital = 500.0
+# Max position per trade (USDC)
+max_position = 50.0
+# Binance taker fee
+fee_rate = 0.001
+
+[telegram]
+bot_token = ""
+chat_id = ""
+
+[execution]
+# "paper" or "live"
+mode = "paper"
+# Max concurrent positions
+max_positions = 3
