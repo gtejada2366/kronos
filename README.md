@@ -44,9 +44,22 @@ python -m src.signals.scanner --mode live --capital 500
 - **config/** — Settings, no secrets in git
 - **scripts/** — Utility scripts
 
+## Volatility Trading
+
+Uses Kronos to predict future realized volatility and compares it against Deribit's implied volatility (DVOL). When Kronos predicts vol significantly lower than what the market prices, options are expensive — sell vol (straddle). When Kronos predicts higher vol, options are cheap — buy vol.
+
+```bash
+# Volatility trading pipeline
+python -m src.data.deribit --action all --currency BTC         # fetch Deribit data
+python -m src.backtest.vol_backtest --currency BTC --days 365  # THE backtest
+python -m src.volatility.signals --mode scan                   # one-shot scan
+python -m src.volatility.signals --mode paper                  # continuous paper
+```
+
 ## Requirements
 
 - Python 3.10+
 - PyTorch 2.1+
 - ~2GB disk for Kronos-base model weights (downloaded automatically from HuggingFace)
 - Binance API key (for live trading only — data fetch is public)
+- Deribit API key (for live vol trading only — market data is public)
