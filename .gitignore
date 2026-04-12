@@ -8,8 +8,7 @@ venv/
 # Config with secrets
 config/settings.toml
 
-# Data (keep structure, not data)
-data/raw/
+# Data cache (raw market data IS committed for reproducibility)
 data/cache/
 
 # Vendor (cloned repos)
