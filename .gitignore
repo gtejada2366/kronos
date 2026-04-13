@@ -11,6 +11,7 @@ config/settings.toml
 # Data cache (raw market data IS committed for reproducibility)
 data/cache/
 data/checkpoints/
+data/paper/
 
 # Vendor (cloned repos)
 vendor/
