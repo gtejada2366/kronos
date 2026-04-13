@@ -99,20 +99,63 @@ class KronosEngine:
                 "2. Or symlink it: ln -s /path/to/Kronos vendor/Kronos"
             )
 
+        import torch
         from model import Kronos, KronosTokenizer, KronosPredictor
+
+        # Resolve device — fall back to cpu if cuda requested but not available
+        requested = self.device
+        if requested == "cuda" and not torch.cuda.is_available():
+            log.warning("device=cuda requested but CUDA unavailable; falling back to cpu")
+            self.device = "cpu"
 
         log.info("Loading tokenizer: %s", self.tokenizer_name)
         self._tokenizer = KronosTokenizer.from_pretrained(self.tokenizer_name)
 
-        log.info("Loading model: %s (this may download ~500MB first time)", self.model_name)
+        log.info("Loading model: %s -> device=%s", self.model_name, self.device)
         self._model = Kronos.from_pretrained(self.model_name)
+        # Explicitly move model to target device BEFORE wrapping in predictor
+        self._model = self._model.to(self.device)
+        self._model.eval()
+        # Also move tokenizer if it has parameters
+        if hasattr(self._tokenizer, "to"):
+            try:
+                self._tokenizer = self._tokenizer.to(self.device)
+            except Exception:
+                pass
 
-        self._predictor = KronosPredictor(
-            self._model, self._tokenizer, max_context=self.max_context
+        # Try to pass device to KronosPredictor; fall back if signature doesn't accept it
+        try:
+            self._predictor = KronosPredictor(
+                self._model, self._tokenizer,
+                max_context=self.max_context, device=self.device,
+            )
+        except TypeError:
+            self._predictor = KronosPredictor(
+                self._model, self._tokenizer, max_context=self.max_context,
+            )
+
+        # VERIFY the model is actually where we want
+        try:
+            param_device = next(self._model.parameters()).device
+        except StopIteration:
+            param_device = None
+        log.info(
+            "Kronos model parameters on device: %s (config requested %s)",
+            param_device, requested,
         )
+        if requested == "cuda" and (param_device is None or param_device.type != "cuda"):
+            raise RuntimeError(
+                f"Model failed to move to CUDA. Parameters on {param_device}. "
+                "Inspect vendor/Kronos/model/ for device handling."
+            )
+        if self.device == "cuda":
+            log.info(
+                "CUDA memory after load: allocated=%.1f MB, reserved=%.1f MB",
+                torch.cuda.memory_allocated() / 1e6,
+                torch.cuda.memory_reserved() / 1e6,
+            )
 
         self._loaded = True
-        log.info("Kronos loaded on device: %s", self.device)
 
     def predict(
         self,

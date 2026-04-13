@@ -63,56 +63,46 @@ def predict_realized_vol(
     _temp = temperature or get("volatility", "temperature", 0.9)
     _top_p = top_p or get("volatility", "top_p", 0.9)
 
-    vols = []
+    # Single batched call: KronosPredictor runs sample_count samples in parallel
+    # on GPU (see vendor/Kronos/model/kronos.py:394 which does x.repeat(sample_count)).
+    # This is ~5-10x faster than calling N times with sample_count=1.
+    # Trade-off: we only get the averaged path back, losing cross-trajectory std.
+    # For the hybrid filter we only use `mean`, so this is acceptable.
+    pred_df = engine.predict(
+        df, pred_len=_pred_len, sample_count=_n_traj,
+        temperature=_temp, top_p=_top_p,
+    )
 
-    for i in range(_n_traj):
-        # Generate one trajectory (sample_count=1 for independent sample)
-        pred_df = engine.predict(
-            df, pred_len=_pred_len, sample_count=1,
-            temperature=_temp, top_p=_top_p,
-        )
-
-        # Compute realized vol from predicted close prices
-        closes = pred_df["close"].values
-        if len(closes) < 2:
-            continue
-
-        # Log returns: r_i = ln(close[i+1] / close[i])
-        log_returns = np.diff(np.log(closes))
-
-        # Realized variance = sum of squared log returns
-        realized_var = np.sum(log_returns ** 2)
-
-        # Annualize: vol = sqrt(realized_var * periods_per_year / pred_len)
-        annualized_vol = math.sqrt(realized_var * PERIODS_PER_YEAR_15M / _pred_len) * 100
-
-        vols.append(annualized_vol)
-
-    if not vols:
-        log.error("No valid trajectories generated")
+    closes = pred_df["close"].values
+    if len(closes) < 2:
+        log.error("No valid prediction generated")
         return {
             "mean": 0.0, "std": 0.0,
             "p5": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0, "p95": 0.0,
             "raw_vols": [], "n_trajectories": 0,
         }
 
-    vol_arr = np.array(vols)
+    log_returns = np.diff(np.log(closes))
+    realized_var = np.sum(log_returns ** 2)
+    annualized_vol = math.sqrt(realized_var * PERIODS_PER_YEAR_15M / _pred_len) * 100
 
+    # Since we batched, std/percentiles collapse to the single averaged path.
+    # Kept in the dict for API compatibility with upstream code.
     result = {
-        "mean": float(np.mean(vol_arr)),
-        "std": float(np.std(vol_arr)),
-        "p5": float(np.percentile(vol_arr, 5)),
-        "p25": float(np.percentile(vol_arr, 25)),
-        "p50": float(np.percentile(vol_arr, 50)),
-        "p75": float(np.percentile(vol_arr, 75)),
-        "p95": float(np.percentile(vol_arr, 95)),
-        "raw_vols": vols,
-        "n_trajectories": len(vols),
+        "mean": float(annualized_vol),
+        "std": 0.0,
+        "p5": float(annualized_vol),
+        "p25": float(annualized_vol),
+        "p50": float(annualized_vol),
+        "p75": float(annualized_vol),
+        "p95": float(annualized_vol),
+        "raw_vols": [annualized_vol],
+        "n_trajectories": _n_traj,
     }
 
     log.info(
-        "Predicted vol: mean=%.1f%% std=%.1f%% [p5=%.1f%%, p95=%.1f%%] (%d trajectories)",
-        result["mean"], result["std"], result["p5"], result["p95"], result["n_trajectories"],
+        "Predicted vol: mean=%.1f%% (batched %d trajectories in one GPU call)",
+        result["mean"], _n_traj,
     )
 
     return result

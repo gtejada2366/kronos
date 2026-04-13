@@ -17,9 +17,12 @@ Usage:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -233,11 +236,33 @@ def run_hybrid_backtest(
                             initial_capital=_capital, hybrid_final_capital=_capital,
                             baseline_final_capital=_capital)
 
+    # --- Checkpoint setup ---
+    ckpt_dir = Path(__file__).parent.parent.parent / "data" / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / f"hybrid_{currency}_{risk_filter_ratio}_{days or 'full'}.json"
+
     baseline_pnls: list[float] = []
     hybrid_pnls: list[float] = []
-    filtered_pnls: list[float] = []  # what hybrid skipped (would-have-been baseline pnl)
+    filtered_pnls: list[float] = []
+    resume_step = 0
+
+    if ckpt_path.exists():
+        try:
+            ck = json.loads(ckpt_path.read_text())
+            resume_step = ck["step"]
+            baseline_pnls = ck["baseline_pnls"]
+            hybrid_pnls = ck["hybrid_pnls"]
+            filtered_pnls = ck["filtered_pnls"]
+            log.info("RESUMED from checkpoint %s at step %d", ckpt_path.name, resume_step)
+        except Exception as e:
+            log.warning("Failed to read checkpoint %s: %s (starting fresh)", ckpt_path, e)
+            resume_step = 0
 
     for step, i in enumerate(tqdm(range(start_idx, end_idx, step_candles), total=total_steps, desc=currency)):
+        if step < resume_step:
+            continue
+
+        t_step = time.time()
         current_ts = ohlcv_in_range.iloc[i]["timestamp"]
         implied_vol = _interpolate_dvol(dvol, current_ts)
         if implied_vol <= 0:
@@ -250,7 +275,9 @@ def run_hybrid_backtest(
         future_closes = ohlcv_in_range.iloc[i : i + hold_candles]["close"].values
         realized_vol = _compute_realized_vol(future_closes)
 
-        # Predict with Kronos
+        # Predict with Kronos — verbose timing to catch freezes
+        t_pred = time.time()
+        log.info("[step %d/%d] pred start ts=%s", step + 1, total_steps, current_ts)
         try:
             vol_pred = predict_realized_vol(
                 engine, window,
@@ -260,6 +287,8 @@ def run_hybrid_backtest(
         except Exception as e:
             log.warning("Step %d/%d prediction failed: %s", step + 1, total_steps, e)
             continue
+        pred_elapsed = time.time() - t_pred
+        log.info("[step %d/%d] pred done in %.2fs", step + 1, total_steps, pred_elapsed)
 
         if vol_pred["n_trajectories"] == 0:
             continue
@@ -267,7 +296,6 @@ def run_hybrid_backtest(
         predicted_vol = vol_pred["mean"]
         ratio = predicted_vol / implied_vol if implied_vol > 0 else 0
 
-        # The would-be baseline trade (always sell)
         baseline_trade = VolTrade(
             currency=currency,
             direction="SELL_VOL",
@@ -284,16 +312,35 @@ def run_hybrid_backtest(
 
         # Filter logic
         if ratio >= risk_filter_ratio:
-            # Kronos says vol will be much higher than implied → skip the short
             filtered_pnls.append(baseline_trade.net_pnl)
         else:
             hybrid_pnls.append(baseline_trade.net_pnl)
 
+        # Checkpoint every 10 steps — cheap, negligible I/O
+        if (step + 1) % 10 == 0:
+            try:
+                ckpt_path.write_text(json.dumps({
+                    "step": step + 1,
+                    "baseline_pnls": baseline_pnls,
+                    "hybrid_pnls": hybrid_pnls,
+                    "filtered_pnls": filtered_pnls,
+                }))
+            except Exception as e:
+                log.warning("Checkpoint write failed: %s", e)
+
         if (step + 1) % 50 == 0:
             log.info(
-                "  Step %d/%d | hybrid trades: %d | filtered: %d | hybrid P&L: $%.2f",
-                step + 1, total_steps, len(hybrid_pnls), len(filtered_pnls), sum(hybrid_pnls),
+                "  Step %d/%d | hybrid trades: %d | filtered: %d | hybrid P&L: $%.2f | step_time=%.1fs",
+                step + 1, total_steps, len(hybrid_pnls), len(filtered_pnls),
+                sum(hybrid_pnls), time.time() - t_step,
             )
+
+    # Clean up checkpoint on successful completion
+    if ckpt_path.exists():
+        try:
+            ckpt_path.unlink()
+        except Exception:
+            pass
 
     # Aggregate
     h = _metrics(hybrid_pnls, _capital)
