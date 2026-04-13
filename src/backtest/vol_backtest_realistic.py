@@ -145,26 +145,43 @@ def run_realistic_backtest(
     hold_days: int = 7,
     initial_capital: float = 2000.0,
     notional: float = 1000.0,
-    spread_pct: float = 0.03,  # 3% of theoretical premium for round-trip bid-ask
-    fee_per_trade: float = 2.0,  # $2 per round-trip (entry + exit)
+    spread_pct: float = 0.03,
+    fee_per_trade: float = 2.0,
+    # Risk management (all optional, default disabled)
+    position_pct: float = 0.0,        # 0 = use fixed `notional`. >0 = % of equity per trade
+    trailing_rv_lookback_days: int = 0,  # 0 = no filter. >0 = check recent RV
+    trailing_rv_block_ratio: float = 1.0,  # block when recent_rv / implied >= this
+    stop_loss_dd_pct: float = 0.0,    # 0 = disabled. >0 = pause if equity DD from peak >= this
+    stop_loss_pause_days: int = 30,
 ) -> dict:
-    """Run baseline always-sell-vol with realistic costs.
+    """Run baseline always-sell-vol with realistic costs and optional risk mgmt.
 
-    Args:
+    Cost args:
         spread_pct: round-trip bid-ask spread as fraction of theoretical premium.
-            3% is conservative-realistic for ATM Deribit options.
         fee_per_trade: fixed $ commission round-trip per trade.
+
+    Risk mgmt args (all optional):
+        position_pct: if > 0, notional = position_pct * current_equity (dynamic sizing).
+            Overrides the fixed `notional` arg. e.g. 0.5 = 50% of equity per trade.
+        trailing_rv_lookback_days: if > 0, compute realized vol over the last N days
+            BEFORE the trade. If recent_rv / implied_vol >= trailing_rv_block_ratio,
+            skip the trade. This avoids entering during already-stressed regimes.
+        trailing_rv_block_ratio: threshold for the trailing filter. e.g. 1.2 = block
+            when recent realized vol is 20% above implied.
+        stop_loss_dd_pct: if equity is below peak by this fraction, pause trading
+            for `stop_loss_pause_days`. e.g. 0.30 = 30% drawdown triggers pause.
+        stop_loss_pause_days: duration of the pause after stop-loss triggers.
     """
     pair = f"{currency}USDT"
     interval = get("trading", "interval", "15m")
     step_candles = step_size_hours * 4
     hold_candles = hold_days * 24 * 4
-    lookback_candles = 1  # we don't need lookback for baseline
+    trailing_lookback_candles = trailing_rv_lookback_days * 24 * 4
+    lookback_candles = max(1, trailing_lookback_candles)
 
     ohlcv = load_pair(pair, interval)
     dvol = load_df("dvol", currency)
 
-    # Align with DVOL availability
     dvol_start = dvol["timestamp"].min()
     dvol_end = dvol["timestamp"].max()
     ohlcv_in_range = ohlcv[
@@ -180,28 +197,67 @@ def run_realistic_backtest(
     total_steps = max(0, (end_idx - start_idx) // step_candles)
 
     log.info(
-        "%s realistic backtest: %d steps | step=%dh hold=%dd spread=%.1f%% fee=$%.2f",
-        currency, total_steps, step_size_hours, hold_days, spread_pct * 100, fee_per_trade,
+        "%s realistic backtest: %d steps | costs spread=%.1f%% fee=$%.2f | "
+        "pos_pct=%.0f%% trail_filter=%dd@%.2f stop_loss=%.0f%%",
+        currency, total_steps, spread_pct * 100, fee_per_trade,
+        position_pct * 100, trailing_rv_lookback_days, trailing_rv_block_ratio,
+        stop_loss_dd_pct * 100,
     )
 
     trades: list[RealisticTrade] = []
     equity = [initial_capital]
     equity_timestamps = [ohlcv_in_range.iloc[start_idx]["timestamp"]]
     capital = initial_capital
+    peak_equity = initial_capital
+    pause_until_ts: pd.Timestamp | None = None
+
+    skipped_by_trail = 0
+    skipped_by_stop = 0
 
     for i in range(start_idx, end_idx, step_candles):
         current_ts = ohlcv_in_range.iloc[i]["timestamp"]
+
+        # --- Risk: stop-loss pause ---
+        if pause_until_ts is not None and current_ts < pause_until_ts:
+            skipped_by_stop += 1
+            equity.append(capital)
+            equity_timestamps.append(current_ts)
+            continue
+        elif pause_until_ts is not None and current_ts >= pause_until_ts:
+            pause_until_ts = None
+            # Reset peak after pause to current capital so we don't immediately re-trigger
+            peak_equity = capital
+
         implied_vol = _interpolate_dvol(dvol, current_ts)
         if implied_vol <= 0:
+            continue
+
+        # --- Risk: trailing realized vol filter ---
+        if trailing_lookback_candles > 0:
+            past_closes = ohlcv_in_range.iloc[i - trailing_lookback_candles : i]["close"].values
+            recent_rv = _compute_realized_vol(past_closes)
+            if recent_rv / implied_vol >= trailing_rv_block_ratio:
+                skipped_by_trail += 1
+                equity.append(capital)
+                equity_timestamps.append(current_ts)
+                continue
+
+        # --- Position sizing ---
+        trade_notional = notional
+        if position_pct > 0:
+            trade_notional = max(0.0, position_pct * capital)
+
+        if trade_notional <= 0:
+            equity.append(capital)
+            equity_timestamps.append(current_ts)
             continue
 
         underlying_price = float(ohlcv_in_range.iloc[i]["close"])
         future_closes = ohlcv_in_range.iloc[i : i + hold_candles]["close"].values
         realized_vol = _compute_realized_vol(future_closes)
 
-        # Theoretical premium for cost computation
         sqrt_t = math.sqrt(hold_days / 365)
-        premium = notional * (implied_vol / 100) * sqrt_t
+        premium = trade_notional * (implied_vol / 100) * sqrt_t
         spread_cost = premium * spread_pct
 
         trade = RealisticTrade(
@@ -210,7 +266,7 @@ def run_realistic_backtest(
             implied_vol=implied_vol,
             realized_vol=realized_vol,
             underlying_price=underlying_price,
-            notional=notional,
+            notional=trade_notional,
             hold_days=hold_days,
             spread_cost=spread_cost,
             fee_cost=fee_per_trade,
@@ -219,6 +275,18 @@ def run_realistic_backtest(
         capital += trade.net_pnl
         equity.append(capital)
         equity_timestamps.append(current_ts)
+
+        # --- Update peak + check stop loss ---
+        if capital > peak_equity:
+            peak_equity = capital
+        if stop_loss_dd_pct > 0 and peak_equity > 0:
+            current_dd = (peak_equity - capital) / peak_equity
+            if current_dd >= stop_loss_dd_pct:
+                pause_until_ts = current_ts + pd.Timedelta(days=stop_loss_pause_days)
+                log.info(
+                    "STOP-LOSS triggered at %s: capital=%.2f peak=%.2f dd=%.1f%%, pausing %d days",
+                    current_ts, capital, peak_equity, current_dd * 100, stop_loss_pause_days,
+                )
 
     if not trades:
         log.error("No trades generated")
@@ -259,6 +327,8 @@ def run_realistic_backtest(
         "roi_pct": (capital - initial_capital) / initial_capital * 100,
         "sharpe_correct": sharpe_correct,
         "sharpe_buggy": sharpe_buggy,
+        "skipped_by_trail": skipped_by_trail,
+        "skipped_by_stop": skipped_by_stop,
         "dd": dd_info,
         "monthly": monthly,
         "equity_curve": equity,
@@ -330,7 +400,69 @@ def main():
     parser.add_argument("--hold-days", type=int, default=7)
     parser.add_argument("--notional", type=float, default=1000.0)
     parser.add_argument("--capital", type=float, default=2000.0)
+    parser.add_argument("--position-pct", type=float, default=0.0,
+                        help="If > 0, use this fraction of equity per trade instead of fixed notional")
+    parser.add_argument("--trail-days", type=int, default=0,
+                        help="Trailing realized vol filter lookback in days (0=disabled)")
+    parser.add_argument("--trail-ratio", type=float, default=1.0,
+                        help="Block trade when recent_rv/implied >= this (default 1.0)")
+    parser.add_argument("--stop-loss-dd", type=float, default=0.0,
+                        help="Stop loss DD threshold (e.g. 0.30 = 30%%). 0=disabled")
+    parser.add_argument("--stop-loss-pause-days", type=int, default=30)
+    parser.add_argument("--compare", action="store_true",
+                        help="Run all 5 scenarios side-by-side and print comparison table")
     args = parser.parse_args()
+
+    if args.compare:
+        scenarios = [
+            ("baseline (no risk mgmt)", dict()),
+            ("+ position sizing 50%", dict(position_pct=0.5)),
+            ("+ trailing RV filter (3d, ratio=1.2)",
+                dict(trailing_rv_lookback_days=3, trailing_rv_block_ratio=1.2)),
+            ("+ stop loss (-30%, 30d pause)",
+                dict(stop_loss_dd_pct=0.30, stop_loss_pause_days=30)),
+            ("ALL THREE combined",
+                dict(position_pct=0.5, trailing_rv_lookback_days=3,
+                     trailing_rv_block_ratio=1.2, stop_loss_dd_pct=0.30,
+                     stop_loss_pause_days=30)),
+        ]
+        results = []
+        for name, extra in scenarios:
+            r = run_realistic_backtest(
+                currency=args.currency, days=args.days,
+                step_size_hours=args.step_hours, hold_days=args.hold_days,
+                initial_capital=args.capital, notional=args.notional,
+                spread_pct=args.spread_pct, fee_per_trade=args.fee_per_trade,
+                **extra,
+            )
+            results.append((name, r))
+
+        print("\n" + "=" * 100)
+        print(f"  RISK MANAGEMENT COMPARISON — {args.currency} ({args.days or 'all'}d, "
+              f"spread={args.spread_pct*100:.0f}% fee=${args.fee_per_trade:.0f})")
+        print("=" * 100)
+        print(f"  {'Scenario':<42} {'Trades':>7} {'ROI':>10} {'Sharpe':>8} "
+              f"{'MaxDD%':>8} {'Final $':>10}")
+        print("  " + "-" * 96)
+        for name, r in results:
+            dd_pct = r['dd']['max_dd_pct'] * 100
+            print(f"  {name:<42} {r['trades']:>7} "
+                  f"{r['roi_pct']:>9.1f}% {r['sharpe_correct']:>8.2f} "
+                  f"{dd_pct:>7.1f}% ${r['final_capital']:>9.0f}")
+        print("=" * 100)
+        print()
+        print("  Detailed DD periods:")
+        for name, r in results:
+            dd = r['dd']
+            print(f"    {name:<42} peak ${dd['peak_value']:.0f} "
+                  f"-> trough ${dd['trough_value']:.0f} "
+                  f"({dd['peak_ts'].strftime('%Y-%m-%d') if dd['peak_ts'] else '?'} "
+                  f"-> {dd['trough_ts'].strftime('%Y-%m-%d') if dd['trough_ts'] else '?'})")
+            if r.get('skipped_by_trail', 0) or r.get('skipped_by_stop', 0):
+                print(f"    {'':>42} skipped: trail={r.get('skipped_by_trail', 0)} "
+                      f"stop={r.get('skipped_by_stop', 0)}")
+        print()
+        return
 
     r = run_realistic_backtest(
         currency=args.currency,
@@ -341,6 +473,11 @@ def main():
         notional=args.notional,
         spread_pct=args.spread_pct,
         fee_per_trade=args.fee_per_trade,
+        position_pct=args.position_pct,
+        trailing_rv_lookback_days=args.trail_days,
+        trailing_rv_block_ratio=args.trail_ratio,
+        stop_loss_dd_pct=args.stop_loss_dd,
+        stop_loss_pause_days=args.stop_loss_pause_days,
     )
     print_summary(r, args.days)
 
