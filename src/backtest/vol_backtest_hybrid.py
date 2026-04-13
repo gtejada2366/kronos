@@ -154,6 +154,7 @@ def run_hybrid_backtest(
     hold_days: int | None = None,
     initial_capital: float | None = None,
     notional: float | None = None,
+    days: int | None = None,
 ) -> HybridResult:
     """Walk-forward hybrid vol backtest.
 
@@ -207,6 +208,16 @@ def run_hybrid_backtest(
     if len(ohlcv_in_range) < _lookback + hold_candles:
         log.warning("Limited overlap, falling back to full OHLCV")
         ohlcv_in_range = ohlcv
+
+    # Trim to last `days` if requested (most recent N days)
+    if days is not None and days > 0:
+        cutoff = ohlcv_in_range["timestamp"].max() - pd.Timedelta(days=days)
+        trimmed = ohlcv_in_range[ohlcv_in_range["timestamp"] >= cutoff].reset_index(drop=True)
+        if len(trimmed) >= _lookback + hold_candles:
+            ohlcv_in_range = trimmed
+            log.info("Trimmed to last %d days: %d candles", days, len(ohlcv_in_range))
+        else:
+            log.warning("Requested %d days but not enough data after trim, using full range", days)
 
     start_idx = _lookback
     end_idx = len(ohlcv_in_range) - hold_candles
@@ -325,7 +336,8 @@ def main():
     parser.add_argument("--currency", type=str, default="BTC")
     parser.add_argument("--filter", type=float, default=1.3,
                         help="Risk filter ratio: skip trade when predicted/implied >= this")
-    parser.add_argument("--days", type=int, default=None, help="(reserved, not yet wired through)")
+    parser.add_argument("--days", type=int, default=None,
+                        help="Limit backtest to last N days (default: all available data)")
     parser.add_argument("--trajectories", type=int, default=None)
     args = parser.parse_args()
 
@@ -338,6 +350,7 @@ def main():
         engine=engine,
         risk_filter_ratio=args.filter,
         n_trajectories=args.trajectories,
+        days=args.days,
     )
     print(result.summary())
 
