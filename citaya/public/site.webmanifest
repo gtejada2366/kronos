@@ -1,0 +1,12 @@
+{
+  "name": "Citaya",
+  "short_name": "Citaya",
+  "description": "Captura, agenda y cobra en WhatsApp",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#FAFAF9",
+  "theme_color": "#0F766E",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
