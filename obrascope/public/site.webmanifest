@@ -1,0 +1,17 @@
+{
+  "name": "ObraScope",
+  "short_name": "ObraScope",
+  "description": "Monitoreo en tiempo real de obras públicas en el Perú.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#0A0A0A",
+  "theme_color": "#F59E0B",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

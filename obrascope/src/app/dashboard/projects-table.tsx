@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import type { ProjectWithSemaforo, Semaforo } from "@/lib/types";
+import type { ProjectEstado, ProjectWithSemaforo, Semaforo } from "@/lib/types";
 import { SemaforoBadge } from "@/components/SemaforoBadge";
 import { fmtPct, fmtSolesCompact, fmtDate } from "@/lib/format";
 
@@ -11,28 +11,47 @@ type SortDir = "asc" | "desc";
 
 const SEMA_ORDER: Record<Semaforo, number> = { rojo: 0, amarillo: 1, verde: 2 };
 
-const ESTADOS: Record<string, string> = {
+const ESTADOS: Record<ProjectEstado, string> = {
   EN_EJECUCION: "En ejecución",
   PARALIZADO: "Paralizado",
   CONCLUIDO: "Concluido",
   EN_LIQUIDACION: "En liquidación"
 };
 
+const ESTADO_OPTIONS: Array<{ value: "" | ProjectEstado; label: string }> = [
+  { value: "", label: "Todos los estados" },
+  { value: "EN_EJECUCION", label: ESTADOS.EN_EJECUCION },
+  { value: "PARALIZADO", label: ESTADOS.PARALIZADO },
+  { value: "CONCLUIDO", label: ESTADOS.CONCLUIDO },
+  { value: "EN_LIQUIDACION", label: ESTADOS.EN_LIQUIDACION }
+];
+
 export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] }) {
   const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<"todos" | Semaforo>("todos");
+  const [filterSema, setFilterSema] = useState<"todos" | Semaforo>("todos");
+  const [filterEstado, setFilterEstado] = useState<"" | ProjectEstado>("");
+  const [minPim, setMinPim] = useState<string>("");
+  const [closesBy, setClosesBy] = useState<string>("");
   const [sortKey, setSortKey] = useState<SortKey>("semaforo");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   const filtered = useMemo(() => {
     const text = q.trim().toLowerCase();
+    const minPimNum = minPim ? Number(minPim) * 1_000_000 : 0;
+    const closesByDate = closesBy ? new Date(closesBy + "T00:00:00") : null;
+
     let arr = projects.filter((p) => {
-      if (filter !== "todos" && p.semaforo !== filter) return false;
+      if (filterSema !== "todos" && p.semaforo !== filterSema) return false;
+      if (filterEstado && p.estado !== filterEstado) return false;
+      if (minPimNum > 0 && p.pim < minPimNum) return false;
+      if (closesByDate && new Date(p.fecha_fin) > closesByDate) return false;
       if (!text) return true;
       return (
         p.nombre.toLowerCase().includes(text) ||
         p.codigo.toLowerCase().includes(text) ||
-        (ESTADOS[p.estado] ?? p.estado).toLowerCase().includes(text)
+        ESTADOS[p.estado].toLowerCase().includes(text)
       );
     });
     arr = [...arr].sort((a, b) => {
@@ -44,14 +63,36 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
       return sign * String(va).localeCompare(String(vb), "es");
     });
     return arr;
-  }, [projects, q, filter, sortKey, sortDir]);
+  }, [projects, q, filterSema, filterEstado, minPim, closesBy, sortKey, sortDir]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const pageRows = filtered.slice(pageStart, pageStart + pageSize);
 
   function toggleSort(k: SortKey) {
+    setPage(1);
     if (k === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     else {
       setSortKey(k);
       setSortDir(k === "pim" || k === "devengado" || k === "pct_devengado" || k === "avance_fisico" ? "desc" : "asc");
     }
+  }
+
+  function clearFilters() {
+    setQ("");
+    setFilterSema("todos");
+    setFilterEstado("");
+    setMinPim("");
+    setClosesBy("");
+    setPage(1);
+  }
+
+  function onFilterChange<T>(setter: (v: T) => void): (v: T) => void {
+    return (v) => {
+      setter(v);
+      setPage(1);
+    };
   }
 
   function exportCsv() {
@@ -95,12 +136,15 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
     URL.revokeObjectURL(url);
   }
 
+  const filtersActive =
+    q !== "" || filterSema !== "todos" || filterEstado !== "" || minPim !== "" || closesBy !== "";
+
   return (
     <div className="panel overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-bg-border bg-bg-elev px-3 py-2">
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => onFilterChange(setQ)(e.target.value)}
           placeholder="Buscar por código, nombre o estado…"
           className="input max-w-xs"
         />
@@ -108,15 +152,53 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
           {(["todos", "verde", "amarillo", "rojo"] as const).map((f) => (
             <button
               key={f}
-              onClick={() => setFilter(f)}
+              onClick={() => onFilterChange(setFilterSema)(f)}
               className={`rounded-sm px-2.5 py-1 text-xs capitalize ${
-                filter === f ? "bg-bg-panel text-ink" : "text-ink-mute hover:text-ink"
+                filterSema === f ? "bg-bg-panel text-ink" : "text-ink-mute hover:text-ink"
               }`}
             >
               {f === "todos" ? "Todos" : f}
             </button>
           ))}
         </div>
+        <select
+          value={filterEstado}
+          onChange={(e) => onFilterChange(setFilterEstado)(e.target.value as "" | ProjectEstado)}
+          className="input max-w-[180px] text-xs"
+        >
+          {ESTADO_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <label className="flex items-center gap-1 text-xs text-ink-mute">
+          PIM ≥
+          <input
+            type="number"
+            value={minPim}
+            onChange={(e) => onFilterChange(setMinPim)(e.target.value)}
+            min={0}
+            step={0.5}
+            className="input w-24"
+            placeholder="0"
+          />
+          <span className="num text-[10px] text-ink-dim">M S/.</span>
+        </label>
+        <label className="flex items-center gap-1 text-xs text-ink-mute">
+          Cierre ≤
+          <input
+            type="date"
+            value={closesBy}
+            onChange={(e) => onFilterChange(setClosesBy)(e.target.value)}
+            className="input w-36"
+          />
+        </label>
+        {filtersActive ? (
+          <button onClick={clearFilters} className="btn-ghost text-xs">
+            Limpiar
+          </button>
+        ) : null}
         <span className="ml-auto text-xs text-ink-dim">
           Mostrando <span className="num text-ink">{filtered.length}</span> de{" "}
           <span className="num text-ink">{projects.length}</span>
@@ -158,14 +240,14 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
             </tr>
           </thead>
           <tbody>
-            {filtered.length === 0 ? (
+            {pageRows.length === 0 ? (
               <tr>
                 <td colSpan={9} className="table-cell py-12 text-center text-ink-dim">
                   Sin proyectos para los filtros aplicados.
                 </td>
               </tr>
             ) : (
-              filtered.map((p) => (
+              pageRows.map((p) => (
                 <tr key={p.id} className="border-b border-bg-border/60 last:border-0 hover:bg-bg-elev/60">
                   <td className="table-cell">
                     <SemaforoBadge value={p.semaforo} withLabel={false} />
@@ -176,7 +258,7 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
                       {p.nombre}
                     </Link>
                   </td>
-                  <td className="table-cell text-xs text-ink-mute">{ESTADOS[p.estado] ?? p.estado}</td>
+                  <td className="table-cell text-xs text-ink-mute">{ESTADOS[p.estado]}</td>
                   <td className="table-cell num text-right">{fmtSolesCompact(p.pim)}</td>
                   <td className="table-cell num text-right">{fmtSolesCompact(p.devengado)}</td>
                   <td className="table-cell num text-right">
@@ -189,6 +271,44 @@ export function ProjectsTable({ projects }: { projects: ProjectWithSemaforo[] })
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-bg-border bg-bg-elev px-3 py-2 text-xs text-ink-mute">
+        <label className="flex items-center gap-2">
+          <span>Filas</span>
+          <select
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setPage(1);
+            }}
+            className="input w-20 text-xs"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </label>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={safePage <= 1}
+            className="btn-ghost text-xs disabled:opacity-40"
+          >
+            ←
+          </button>
+          <span className="num">
+            {safePage} / {totalPages}
+          </span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={safePage >= totalPages}
+            className="btn-ghost text-xs disabled:opacity-40"
+          >
+            →
+          </button>
+        </div>
       </div>
     </div>
   );

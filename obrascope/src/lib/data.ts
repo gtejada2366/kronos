@@ -1,6 +1,14 @@
 import { createSupabaseServerClient } from "./supabase/server";
 import { enrichProject } from "./semaforo";
-import type { Alert, Entity, Execution, Profile, Project, ProjectWithSemaforo } from "./types";
+import type {
+  Alert,
+  Entity,
+  Execution,
+  Profile,
+  Project,
+  ProjectHistory,
+  ProjectWithSemaforo
+} from "./types";
 
 export async function getCurrentContext(): Promise<{
   user: { id: string; email: string | null };
@@ -76,4 +84,15 @@ export async function getAlertsForProject(projectId: string): Promise<Alert[]> {
     .order("sent_at", { ascending: false })
     .limit(20);
   return (data ?? []) as Alert[];
+}
+
+export async function getProjectHistory(projectId: string): Promise<ProjectHistory[]> {
+  const supabase = createSupabaseServerClient();
+  const { data } = await supabase
+    .from("project_history")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("changed_at", { ascending: false })
+    .limit(50);
+  return (data ?? []) as ProjectHistory[];
 }

@@ -3,10 +3,16 @@ import Link from "next/link";
 import { Topbar } from "@/components/Topbar";
 import { SemaforoBadge } from "@/components/SemaforoBadge";
 import { KpiCard } from "@/components/KpiCard";
-import { ExecutionChart } from "./execution-chart";
-import { getAlertsForProject, getCurrentContext, getExecutions, getProject } from "@/lib/data";
+import { ExecutionPanel } from "./execution-panel";
+import {
+  getAlertsForProject,
+  getCurrentContext,
+  getExecutions,
+  getProject,
+  getProjectHistory
+} from "@/lib/data";
 import { fmtDate, fmtPct, fmtSoles, fmtSolesCompact } from "@/lib/format";
-import { mesNombre } from "@/lib/format";
+import type { ProjectHistory } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +30,17 @@ const ALERTAS: Record<string, string> = {
   DIGEST_SEMANAL: "Digest semanal"
 };
 
+const FIELD_LABELS: Record<string, string> = {
+  pim: "PIM",
+  pia: "PIA",
+  devengado: "Devengado",
+  avance_fisico: "Avance físico",
+  estado: "Estado",
+  fecha_fin: "Cierre",
+  fecha_inicio: "Inicio",
+  nombre: "Nombre"
+};
+
 export default async function ProjectDetailPage({ params }: { params: { id: string } }) {
   const ctx = await getCurrentContext();
   if (!ctx) redirect("/login");
@@ -31,25 +48,11 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
   const project = await getProject(params.id);
   if (!project || project.entity_id !== ctx.entity.id) notFound();
 
-  const [executions, alerts] = await Promise.all([
+  const [executions, alerts, history] = await Promise.all([
     getExecutions(project.id),
-    getAlertsForProject(project.id)
+    getAlertsForProject(project.id),
+    getProjectHistory(project.id)
   ]);
-
-  const anioActual = new Date().getFullYear();
-  const monthly = Array.from({ length: 12 }, (_, i) => {
-    const mes = i + 1;
-    const e = executions.find((x) => x.anio === anioActual && x.mes === mes);
-    const targetPct = (mes / 12) * 90;
-    const targetDevengado = (project.pim * targetPct) / 100;
-    return {
-      mes,
-      label: mesNombre(mes),
-      devengado: e ? e.devengado : 0,
-      meta: Math.round(targetDevengado),
-      tieneData: !!e
-    };
-  });
 
   return (
     <div className="min-h-screen">
@@ -93,22 +96,7 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
         </section>
 
         <section className="mt-6 grid gap-4 lg:grid-cols-[2fr_1fr]">
-          <div className="panel p-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Ejecución mensual {anioActual}</h2>
-              <div className="flex items-center gap-3 text-xs text-ink-mute">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-accent" /> Devengado
-                </span>
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="h-px w-3 bg-ink-mute" /> Meta
-                </span>
-              </div>
-            </div>
-            <div className="mt-3 h-72">
-              <ExecutionChart data={monthly} />
-            </div>
-          </div>
+          <ExecutionPanel executions={executions} pim={project.pim} />
 
           <div className="panel p-4">
             <h2 className="text-sm font-semibold">Resumen contractual</h2>
@@ -125,27 +113,42 @@ export default async function ProjectDetailPage({ params }: { params: { id: stri
           </div>
         </section>
 
-        <section className="mt-6 panel p-4">
-          <h2 className="text-sm font-semibold">Historial de alertas</h2>
-          {alerts.length === 0 ? (
-            <p className="mt-3 text-sm text-ink-dim">Sin alertas registradas para este proyecto.</p>
-          ) : (
-            <ul className="mt-3 divide-y divide-bg-border">
-              {alerts.map((a) => (
-                <li key={a.id} className="flex items-start justify-between gap-4 py-2.5">
-                  <div>
-                    <p className="text-sm">
-                      <span className="rounded-sm border border-bg-border bg-bg-elev px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-ink-mute">
-                        {ALERTAS[a.tipo] ?? a.tipo}
-                      </span>{" "}
-                      <span className="ml-2 text-ink">{a.mensaje}</span>
-                    </p>
-                  </div>
-                  <span className="num shrink-0 text-xs text-ink-dim">{fmtDate(a.sent_at)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+        <section className="mt-6 grid gap-4 lg:grid-cols-2">
+          <div className="panel p-4">
+            <h2 className="text-sm font-semibold">Historial de alertas</h2>
+            {alerts.length === 0 ? (
+              <p className="mt-3 text-sm text-ink-dim">Sin alertas registradas para este proyecto.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-bg-border">
+                {alerts.map((a) => (
+                  <li key={a.id} className="flex items-start justify-between gap-4 py-2.5">
+                    <div>
+                      <p className="text-sm">
+                        <span className="rounded-sm border border-bg-border bg-bg-elev px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-ink-mute">
+                          {ALERTAS[a.tipo] ?? a.tipo}
+                        </span>{" "}
+                        <span className="ml-2 text-ink">{a.mensaje}</span>
+                      </p>
+                    </div>
+                    <span className="num shrink-0 text-xs text-ink-dim">{fmtDate(a.sent_at)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="panel p-4">
+            <h2 className="text-sm font-semibold">Auditoría de cambios</h2>
+            {history.length === 0 ? (
+              <p className="mt-3 text-sm text-ink-dim">Sin cambios registrados todavía.</p>
+            ) : (
+              <ul className="mt-3 divide-y divide-bg-border">
+                {history.slice(0, 25).map((h) => (
+                  <HistoryRow key={h.id} h={h} />
+                ))}
+              </ul>
+            )}
+          </div>
         </section>
       </main>
     </div>
@@ -159,4 +162,43 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
       <dd className={`text-sm text-ink ${mono ? "num" : ""}`}>{v}</dd>
     </div>
   );
+}
+
+function HistoryRow({ h }: { h: ProjectHistory }) {
+  const label = FIELD_LABELS[h.field] ?? h.field;
+  return (
+    <li className="flex items-start justify-between gap-4 py-2.5">
+      <div className="min-w-0">
+        <p className="text-sm">
+          <span className="rounded-sm border border-bg-border bg-bg-elev px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-ink-mute">
+            {label}
+          </span>
+          <span className="ml-2 text-ink-mute">
+            <span className="font-mono text-xs text-sema-red line-through">
+              {formatHistoryValue(h.field, h.old_value)}
+            </span>{" "}
+            →{" "}
+            <span className="font-mono text-xs text-sema-green">
+              {formatHistoryValue(h.field, h.new_value)}
+            </span>
+          </span>
+        </p>
+      </div>
+      <span className="num shrink-0 text-xs text-ink-dim">{fmtDate(h.changed_at)}</span>
+    </li>
+  );
+}
+
+function formatHistoryValue(field: string, value: string | null): string {
+  if (value === null) return "—";
+  if (field === "pim" || field === "pia" || field === "devengado") {
+    const n = Number(value);
+    return Number.isFinite(n) ? fmtSolesCompact(n) : value;
+  }
+  if (field === "avance_fisico") {
+    const n = Number(value);
+    return Number.isFinite(n) ? fmtPct(n, 0) : value;
+  }
+  if (field === "estado") return ESTADOS[value] ?? value;
+  return value;
 }

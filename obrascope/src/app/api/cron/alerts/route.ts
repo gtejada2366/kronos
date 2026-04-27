@@ -4,10 +4,15 @@ import { isAuthorizedCron } from "@/lib/cron-auth";
 import { enrichProject } from "@/lib/semaforo";
 import { sendTelegramMessage } from "@/lib/telegram";
 import { fmtPct, fmtSolesCompact } from "@/lib/format";
+import { logger } from "@/lib/logger";
+import { clientKey, rateLimit } from "@/lib/rate-limit";
 import type { Entity, Project } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+const RATE_LIMIT = 4;
+const RATE_WINDOW_MS = 60 * 60 * 1000;
 
 interface EntityReport {
   entity: Entity;
@@ -18,7 +23,17 @@ interface EntityReport {
 }
 
 export async function GET(req: NextRequest) {
+  const ip = clientKey(req.headers);
+  const rl = rateLimit(`cron-alerts:${ip}`, RATE_LIMIT, RATE_WINDOW_MS);
+  if (!rl.ok) {
+    logger.warn("cron_rate_limited", { route: "alerts", ip, resetAt: rl.resetAt });
+    return NextResponse.json(
+      { ok: false, error: "rate_limited", reset_at: new Date(rl.resetAt).toISOString() },
+      { status: 429 }
+    );
+  }
   if (!isAuthorizedCron(req)) {
+    logger.warn("cron_unauthorized", { route: "alerts", ip });
     return NextResponse.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
 
@@ -100,7 +115,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({
+  const response = {
     ok: true,
     ran_at: now.toISOString(),
     entities: reports.length,
@@ -108,7 +123,9 @@ export async function GET(req: NextRequest) {
     skipped,
     failed,
     detail
-  });
+  };
+  logger.info("cron_alerts_done", { entities: reports.length, sent, skipped, failed });
+  return NextResponse.json(response);
 }
 
 function buildAlertMessage(r: EntityReport): string {

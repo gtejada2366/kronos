@@ -90,12 +90,51 @@ create table if not exists public.alerts (
 create index if not exists alerts_entity_idx on public.alerts (entity_id);
 create index if not exists alerts_project_idx on public.alerts (project_id);
 
+-- PROJECT HISTORY (audit log) ----------------------------------------------
+create table if not exists public.project_history (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  field text not null,
+  old_value text,
+  new_value text,
+  changed_at timestamptz not null default now()
+);
+
+create index if not exists project_history_project_idx
+  on public.project_history (project_id, changed_at desc);
+
+create or replace function public.log_project_changes() returns trigger
+language plpgsql as $$
+declare
+  watched text[] := array['pia','pim','devengado','avance_fisico','estado','fecha_inicio','fecha_fin','nombre'];
+  fname text;
+  oldv text;
+  newv text;
+begin
+  foreach fname in array watched loop
+    execute format('select ($1).%I::text, ($2).%I::text', fname, fname)
+      into oldv, newv using OLD, NEW;
+    if oldv is distinct from newv then
+      insert into public.project_history (project_id, field, old_value, new_value)
+      values (NEW.id, fname, oldv, newv);
+    end if;
+  end loop;
+  return NEW;
+end;
+$$;
+
+drop trigger if exists project_changes_audit on public.projects;
+create trigger project_changes_audit
+  after update on public.projects
+  for each row execute function public.log_project_changes();
+
 -- ROW LEVEL SECURITY --------------------------------------------------------
 alter table public.entities enable row level security;
 alter table public.projects enable row level security;
 alter table public.executions enable row level security;
 alter table public.alerts enable row level security;
 alter table public.profiles enable row level security;
+alter table public.project_history enable row level security;
 
 -- helper: entity_id of the calling user (cached per request)
 create or replace function public.current_entity_id() returns uuid
@@ -133,5 +172,16 @@ create policy "executions scoped read" on public.executions
 drop policy if exists "alerts scoped read" on public.alerts;
 create policy "alerts scoped read" on public.alerts
   for select using (entity_id = public.current_entity_id());
+
+-- project_history: scoped via parent project's entity
+drop policy if exists "project_history scoped read" on public.project_history;
+create policy "project_history scoped read" on public.project_history
+  for select using (
+    exists (
+      select 1 from public.projects p
+      where p.id = project_history.project_id
+        and p.entity_id = public.current_entity_id()
+    )
+  );
 
 -- The service role bypasses RLS — used by cron + seed scripts.

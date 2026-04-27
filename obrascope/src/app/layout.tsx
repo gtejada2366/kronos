@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,7 +7,18 @@ export const metadata: Metadata = {
     "Dashboard SaaS para municipalidades y gobiernos regionales del Perú. Monitorea PIM, devengado, avance físico y semáforos en tiempo real.",
   applicationName: "ObraScope",
   authors: [{ name: "ObraScope" }],
-  robots: { index: false, follow: false }
+  robots: { index: false, follow: false },
+  manifest: "/site.webmanifest",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    apple: [{ url: "/favicon.svg" }]
+  }
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0A0A0A",
+  width: "device-width",
+  initialScale: 1
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

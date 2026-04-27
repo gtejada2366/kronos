@@ -56,6 +56,15 @@ export interface Profile {
   created_at: string;
 }
 
+export interface ProjectHistory {
+  id: string;
+  project_id: string;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  changed_at: string;
+}
+
 export interface ProjectWithSemaforo extends Project {
   pct_devengado: number;
   pct_anio_transcurrido: number;

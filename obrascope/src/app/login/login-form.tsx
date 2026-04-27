@@ -110,6 +110,12 @@ export function LoginForm() {
         Demo: <span className="font-mono">{DEMO_EMAIL}</span> /{" "}
         <span className="font-mono">{DEMO_PASSWORD}</span>
       </p>
+      <p className="text-center text-xs text-ink-dim">
+        ¿Tu entidad aún no está registrada?{" "}
+        <a href="/signup" className="text-accent hover:underline">
+          Crear cuenta
+        </a>
+      </p>
     </form>
   );
 }
