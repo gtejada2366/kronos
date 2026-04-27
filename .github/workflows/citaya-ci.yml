@@ -1,0 +1,40 @@
+name: Citaya CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "citaya/**"
+      - ".github/workflows/citaya-ci.yml"
+  pull_request:
+    paths:
+      - "citaya/**"
+      - ".github/workflows/citaya-ci.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: citaya
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+      SUPABASE_SERVICE_ROLE_KEY: placeholder
+      CRON_SECRET: placeholder
+      ANTHROPIC_API_KEY: placeholder
+      WHATSAPP_VERIFY_TOKEN: placeholder
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: citaya/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
